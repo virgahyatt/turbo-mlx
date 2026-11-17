@@ -20,3 +20,6 @@ Signing.local.xcconfig
 
 # Scripts that stay on this Mac.
 /scripts/local/
+
+# MCP server
+.venv/
