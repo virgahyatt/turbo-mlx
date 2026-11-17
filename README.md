@@ -94,15 +94,17 @@ cd mcp-server && uv run python tests/smoke_client.py http://192.168.1.20:8765/mc
 | `list_models` | The catalog, what is downloaded, each model's defaults and step range. |
 | `download_model` | Fetch a model from Hugging Face (pinned to the commit the engine was checked with). Needs `confirm=true`: without it, it only returns the size, so an agent asks the user first. |
 | `get_download`, `cancel_download` | Follow a download (GB, %, speed, ETA) or stop it. |
-| `generate_image` | Text to image (or edits with `reference_images`). Returns the PNG inline and a URL. |
+| `generate_image` | Text to image (or edits with `reference_images`). |
 | `edit_image` | Change a picture as an instruction says, keeping the rest (FLUX.2 Klein, FLUX 3, Qwen-Image Edit, SenseNova). |
-| `generate_video` | LTX-2.3 / 2.5: a clip with sound from a prompt, optionally from a first and/or last frame. MP4 URL, first frame inline. |
+| `generate_video` | LTX-2.3 / 2.5: a clip with sound from a prompt, optionally from a first and/or last frame (MP4). |
 | `generate_song` | MiniMax-Music3: description + lyrics (or instrumental) to a song up to 6 minutes. WAV URL. |
 | `generate_sound_effect` | MOSS-SoundEffect: up to 30 s of sound from a description. WAV URL. |
 | `upscale_image` | SeedVR2 3B: enlarge a picture 2-4x. |
 | `image_to_3d` | Idol: one picture of an object to a Gaussian-splat GLB. |
-| `get_job`, `list_jobs`, `cancel_job` | Follow, list and cancel jobs. |
+| `get_job`, `list_jobs`, `cancel_job` | Follow, list and cancel jobs. `get_job(details=true)` adds seed, size, timings and the picture inline. |
 | `unload_model` | Free the GPU memory of the loaded model. |
+
+A finished generation answers with its link alone, which keeps small models' context clean.
 
 Input pictures can be http(s) URLs, `data:` URIs, base64, or the URL of an earlier result from this server
 (so a client can generate, then edit or upscale the result). To use a local file, upload it first; the

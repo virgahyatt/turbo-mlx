@@ -60,7 +60,7 @@ mcp = MCPServer(
         "Local generative media on an Apple-silicon Mac (MLX). Call list_models first: a model must be downloaded "
         "(ask the user, then download_model with confirm=true) before it can generate. Jobs run one at a time on the GPU. Long jobs "
         "(video, songs, big models) may outlast the call: the tool then returns a job_id; poll get_job(job_id). "
-        "Results are returned inline (images) and as HTTP URLs on this server. To change an existing picture use "
+        "A finished generation returns just its link (get_job with details=true gives the seed, size and the picture). To change an existing picture use "
         "edit_image. Input pictures may be URLs of earlier results, http(s) URLs, data: URIs or base64; a picture "
         "pasted into the chat must first be uploaded from its file: POST the bytes to /upload on this server with the "
         "same Authorization header (curl --data-binary @file.png -H 'Authorization: Bearer ...' <server>/upload), "
@@ -215,7 +215,11 @@ def _submit(m: catalog.Model, kind: str, params: dict[str, Any]) -> Job:
     return engine.submit(model_id=m.id, kind=kind, model=_model_spec(m), params=params, job_id=job_id)
 
 
-def _job_result(job: Job, include_image: bool = True) -> CallToolResult:
+def _job_result(job: Job, details: bool = False) -> CallToolResult:
+    """A finished job answers with its link alone; `details` adds the seed, size and timings and inlines the
+    PNG (or a video's first frame). Running, failed and cancelled jobs answer with their short status."""
+    if job.status == "done" and job.result and not details:
+        return CallToolResult(content=[TextContent(type="text", text=_file_url(job.result["path"]))])
     info = job.summary()
     content: list[Any] = []
     if job.status == "done" and job.result:
@@ -229,7 +233,7 @@ def _job_result(job: Job, include_image: bool = True) -> CallToolResult:
         if r.get("poster"):
             info["poster_url"] = _file_url(r["poster"])
         image = r["path"] if r["path"].endswith(".png") else r.get("poster")
-        if include_image and image and Path(image).is_file():
+        if image and Path(image).is_file():
             content.append(ImageContent(type="image", mime_type="image/png",
                                         data=base64.b64encode(Path(image).read_bytes()).decode()))
     elif job.status not in TERMINAL:
@@ -240,7 +244,7 @@ def _job_result(job: Job, include_image: bool = True) -> CallToolResult:
     return CallToolResult(content=content, is_error=job.status == "failed")
 
 
-async def _run(job: Job, ctx: Context | None, wait_seconds: float | None, include_image: bool = True) -> CallToolResult:
+async def _run(job: Job, ctx: Context | None, wait_seconds: float | None, details: bool = False) -> CallToolResult:
     last = [0.0]
 
     async def report(j: Job) -> None:
@@ -255,7 +259,7 @@ async def _run(job: Job, ctx: Context | None, wait_seconds: float | None, includ
                 await ctx.report_progress(0, None, msg)
 
     await engine.wait(job, cfg.default_wait if wait_seconds is None else wait_seconds, report)
-    return _job_result(job, include_image)
+    return _job_result(job, details)
 
 
 def _error(message: str) -> CallToolResult:
@@ -413,7 +417,7 @@ async def generate_image(
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
-    """Generates an image from a prompt (or edits reference images) and returns it as PNG, inline and as a URL."""
+    """Generates an image from a prompt (or edits reference images); returns the PNG's link."""
     try:
         m = _resolve_model(model, catalog.IMAGE, edits=bool(reference_images))
         if m.is_upscaler:
@@ -457,7 +461,7 @@ async def edit_image(
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
     """Edits a picture as the instruction says (change colours, hair, clothes, background, add or remove things)
-    and returns the new PNG. A local file or a picture pasted into the chat cannot be sent directly: upload the file
+    and returns the new PNG's link. A local file or a picture pasted into the chat cannot be sent directly: upload the file
     with the `upload_local_picture` command list_models gives, then pass the URL it returns. Don't send base64."""
     return await generate_image(
         prompt=instruction, ctx=ctx, model=model, width=width or 1024, height=height or 1024, steps=steps,
@@ -484,7 +488,7 @@ async def generate_video(
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
-    """Generates a video clip with sound (MP4, H.264) with LTX-2; returns its URL and the first frame inline."""
+    """Generates a video clip with sound (MP4, H.264) with LTX-2; returns its link."""
     try:
         m = _resolve_model(model, catalog.VIDEO)
         _require_installed(m, quality)
@@ -521,7 +525,7 @@ async def generate_song(
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
-    """Composes a song with vocals (or an instrumental) with MiniMax-Music3; returns a WAV URL."""
+    """Composes a song with vocals (or an instrumental) with MiniMax-Music3; returns the WAV's link."""
     try:
         m = _resolve_model(model, catalog.AUDIO, family="minimax-music3")
         if m.family != "minimax-music3":
@@ -545,7 +549,7 @@ async def generate_sound_effect(
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
-    """Makes a sound effect or ambience (48 kHz mono WAV) with MOSS-SoundEffect; returns its URL."""
+    """Makes a sound effect or ambience (48 kHz mono WAV) with MOSS-SoundEffect; returns its link."""
     try:
         m = catalog.find("moss-soundeffect")
         _require_installed(m)
@@ -567,7 +571,7 @@ async def upscale_image(
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
-    """Enlarges a picture with SeedVR2 3B (one-step diffusion upscaler); returns the PNG."""
+    """Enlarges a picture with SeedVR2 3B (one-step diffusion upscaler); returns the PNG's link."""
     try:
         m = catalog.find("seedvr2-3b")
         _require_installed(m)
@@ -589,7 +593,7 @@ async def image_to_3d(
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
-    """Turns one picture of one object into a 3D Gaussian-splat object (GLB) with Idol; returns its URL."""
+    """Turns one picture of one object into a 3D Gaussian-splat object (GLB) with Idol; returns its link."""
     try:
         m = catalog.find("idol")
         _require_installed(m)
@@ -607,13 +611,14 @@ async def get_job(
     job_id: str,
     ctx: Context,
     wait_seconds: WaitArg = None,
-    include_image: Annotated[bool, Field(description="Inline the PNG (or video poster) when done.")] = True,
+    details: Annotated[bool, Field(description="When done, also return the seed, size and timings, with the picture "
+                                               "(or a video's first frame) inline. Default: the link only.")] = False,
 ) -> CallToolResult:
     """Status of a generation job; waits for it to finish (up to wait_seconds) and returns its result."""
     job = engine.jobs.get(job_id)
     if job is None:
         return _error(f"no job {job_id}")
-    return await _run(job, ctx, wait_seconds, include_image)
+    return await _run(job, ctx, wait_seconds, details)
 
 
 @mcp.tool()
