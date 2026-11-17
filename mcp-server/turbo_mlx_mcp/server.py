@@ -82,6 +82,19 @@ def _file_url(path: str | Path) -> str:
     return f"{cfg.public_url.rstrip('/')}/files/{Path(path).name}"
 
 
+def _upload_command(file: str = "/path/to/picture.png") -> str:
+    """The exact command a client runs to upload a local picture to this server (its own address, so clients
+    never need it hard-coded). The token is the client's copy of TURBO_MCP_TOKEN."""
+    auth = ' -H "Authorization: Bearer $(cat ~/.config/turbo-mlx-mcp/token)"' if cfg.token else ""
+    return f'curl -s --data-binary @"{file}"{auth} {cfg.public_url.rstrip("/")}/upload'
+
+
+def _not_uploaded(ref: str) -> ValueError:
+    file = ref[1:] if ref.startswith("@") else ref  # OpenCode's file-mention marker is not part of the name
+    return ValueError(f"{ref!r} is a file on your machine, which this server cannot read. Upload it first with: "
+                      f"{_upload_command(file)}  -- then pass the \"url\" it returns.")
+
+
 def _low_memory() -> bool:
     if cfg.low_memory in ("1", "true", "yes"):
         return True
@@ -151,14 +164,15 @@ def _input_image(ref: str) -> str:
     if ref.startswith("data:"):
         ref = ref.split(",", 1)[1]
     p = Path(ref).expanduser()
-    if len(ref) < 1024 and p.is_absolute():
-        if p.is_file() and (cfg.allow_local_paths or p.resolve().is_relative_to(cfg.output_dir.resolve())):
+    if len(ref) < 1024 and (p.is_absolute() or ref.startswith(("~", "./", "../", "@")) or re.fullmatch(r"[^/\s]+\.(png|jpe?g|webp|heic)", ref, re.I)):
+        if p.is_absolute() and p.is_file() and (cfg.allow_local_paths or p.resolve().is_relative_to(cfg.output_dir.resolve())):
             return str(p)
-        raise ValueError(f"path {ref} is not readable here (only this server's outputs, unless TURBO_ALLOW_LOCAL_PATHS=1)")
+        raise _not_uploaded(ref)
     try:
         data = base64.b64decode(ref, validate=True)
     except binascii.Error as e:
-        raise ValueError("image must be an http(s) URL, a data: URI, base64, or a URL of this server's results") from e
+        raise ValueError("image must be the URL of an earlier result or of an upload, an http(s) URL, a data: URI or "
+                         f"base64. To use a local file, upload it first: {_upload_command()}") from e
     path = inputs / f"{name}{_guess_ext(data)}"
     path.write_bytes(data)
     return str(path)
@@ -279,6 +293,7 @@ async def list_models(media: Annotated[Literal["image", "video", "audio", "3d"] 
         })
     host = engine.info or {}
     text = json.dumps({"device": host.get("device"), "memory_gb": round(host.get("memory", 0) / 2**30) or None,
+                       "upload_local_picture": _upload_command() + "   (returns {\"url\": ...} to pass as image)",
                        "models": rows}, indent=1)
     return CallToolResult(content=[TextContent(type="text", text=text)])
 
@@ -443,8 +458,8 @@ async def edit_image(
     wait_seconds: WaitArg = None,
 ) -> CallToolResult:
     """Edits a picture as the instruction says (change colours, hair, clothes, background, add or remove things)
-    and returns the new PNG. Pictures pasted into a chat cannot be sent directly: upload the file first
-    (POST it to /upload on this server) and pass the URL it returns."""
+    and returns the new PNG. A local file or a picture pasted into the chat cannot be sent directly: upload the file
+    with the `upload_local_picture` command list_models gives, then pass the URL it returns. Don't send base64."""
     return await generate_image(
         prompt=instruction, ctx=ctx, model=model, width=width or 1024, height=height or 1024, steps=steps,
         reference_images=[image] + (extra_images or []), seed=seed, wait_seconds=wait_seconds,
