@@ -148,7 +148,8 @@ def _input_image(ref: str) -> str:
     ref = ref.strip()
     inputs = cfg.output_dir / "inputs"
     name = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(6).hex()}"
-    if m := re.search(r"/files/([A-Za-z0-9._-]+)$", ref):
+    # An earlier result or upload, by its URL or bare file name: used in place, nothing is fetched.
+    if m := re.fullmatch(r"(?:.*/files/)?([A-Za-z0-9][A-Za-z0-9._-]*)", ref):
         path = cfg.output_dir / m.group(1)
         if path.is_file():
             return str(path)
@@ -264,8 +265,7 @@ def _error(message: str) -> CallToolResult:
 WaitArg = Annotated[float | None, Field(description="Seconds to wait for the result before returning a job_id to poll "
                                                     "(default 600; 0 returns at once).", ge=0, le=3600)]
 SeedArg = Annotated[int | None, Field(description="Random seed; omit for a random one.", ge=0)]
-ImageRef = Annotated[str, Field(description="An http(s) URL, a data: URI or base64 of a PNG/JPEG, or the URL of a "
-                                            "previous result from this server.")]
+ImageRef = Annotated[str, Field(description="Usually the URL (or file name) of an earlier result or upload from this server, used in place: never download and re-upload it. Also any http(s) URL, a data: URI or base64.")]
 
 
 # ---------------------------------------------------------------- tools: models
@@ -407,7 +407,7 @@ async def generate_image(
     guidance: Annotated[float | None, Field(description="CFG scale, for models that take it.", ge=1, le=10)] = None,
     negative_prompt: Annotated[str | None, Field(description="For models that take one.")] = None,
     reference_images: Annotated[list[str] | None, Field(description="Pictures to edit / take from (FLUX.2 Klein, FLUX 3, "
-                                                                    "Qwen-Image Edit, SenseNova): URLs, data: URIs or base64.")] = None,
+                                                                    "Qwen-Image Edit, SenseNova): the URL (or file name) of an earlier result or upload from this server, used in place: never download and re-upload it; or other URLs.")] = None,
     transparent_background: Annotated[bool, Field(description="Ming-Image only: keep the alpha channel.")] = False,
     loras: Annotated[list[dict] | None, Field(description='[{"path": "/abs/path/on/server.safetensors", "scale": 1.0}]')] = None,
     seed: SeedArg = None,
@@ -444,8 +444,7 @@ async def generate_image(
 
 @mcp.tool()
 async def edit_image(
-    image: Annotated[str, Field(description="The picture to edit: the URL of an earlier result, a URL returned by "
-                                            "POST /upload, any http(s) URL, a data: URI or base64.")],
+    image: Annotated[str, Field(description="The picture to edit: the URL (or file name) of an earlier result or upload from this server, used in place: never download and re-upload it. Also any http(s) URL.")],
     instruction: Annotated[str, Field(description="What to change, e.g. 'make both people blond'. The rest is kept.")],
     ctx: Context,
     model: Annotated[str | None, Field(description="Default: the first downloaded model that edits (flux2-klein-4b, "
@@ -475,8 +474,8 @@ async def generate_video(
     height: Annotated[int, Field(ge=256, le=2048, description="Snapped to a multiple of 64.")] = 512,
     seconds: Annotated[float, Field(ge=1, le=10)] = 5.0,
     fps: Literal[24, 25, 30] = 24,
-    first_frame: Annotated[str | None, Field(description="Image the clip starts from (URL, data: URI or base64).")] = None,
-    last_frame: Annotated[str | None, Field(description="Image the clip ends on.")] = None,
+    first_frame: Annotated[str | None, Field(description="Image the clip starts from: the URL (or file name) of an earlier result or upload from this server, used in place: never download and re-upload it; or another URL.")] = None,
+    last_frame: Annotated[str | None, Field(description="Image the clip ends on (same forms as first_frame).")] = None,
     quality: Annotated[bool, Field(description="Full guided pipeline: slower, better (needs include_quality download).")] = False,
     auto_duration: Annotated[bool, Field(description="LTX-2.5 only: let the model pick the length, up to `seconds`.")] = False,
     steps: Annotated[int | None, Field(description="First-stage steps; default 8 (30 with quality).")] = None,
