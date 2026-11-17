@@ -36,10 +36,12 @@ for bundle in "$PRODUCTS"/*.bundle(N); do
 done
 
 step "Building turbo-engine (Release)"
+# "My Mac" is the machine running the build: without the name, other Macs Xcode sees on the network
+# (paired devices) match too and xcodebuild refuses to choose.
 # xcodebuild builds a package from its own folder. mlx-swift declares a package plug-in, which
 # xcodebuild will not run unattended unless its validation is skipped.
 (cd Engine && xcodebuild -quiet -scheme turbo-engine -configuration Release \
-  -destination "platform=macOS,arch=arm64" -derivedDataPath "../$DERIVED" \
+  -destination "platform=macOS,arch=arm64,name=My Mac" -derivedDataPath "../$DERIVED" \
   -skipPackagePluginValidation -skipMacroValidation build)
 
 BIN=$(find "$PRODUCTS" -maxdepth 1 -type f -name turbo-engine | head -1)
