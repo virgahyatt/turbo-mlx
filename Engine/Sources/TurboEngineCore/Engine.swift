@@ -11,7 +11,17 @@ public final class Engine {
 
     private let emitter = Emitter.shared
     private var loaded: (key: String, model: FamilyModel)?
-    private let defaultCacheLimit = Memory.cacheLimit
+    /// MLX's buffer cache outside Save memory. MLX's own default is its whole memory limit, so a long-lived engine's
+    /// cache grows job after job until active memory plus cache nears that limit; then every allocation frees cache
+    /// and waits on the GPU, which idles between kernels (FLUX 3 on a 128 GB Mac: 21.6 GB active, an 86 GB
+    /// footprint, steps from 26 s to 125 s). An eighth of the RAM (16 GB at 128) still reuses a step's buffers.
+    /// `TURBO_CACHE_LIMIT_GB` sets it.
+    private let defaultCacheLimit: Int = {
+        if let gb = ProcessInfo.processInfo.environment["TURBO_CACHE_LIMIT_GB"].flatMap(Double.init), gb >= 0 {
+            return Int(gb * Double(1 << 30))
+        }
+        return min(Memory.cacheLimit, max(2 << 30, Int(ProcessInfo.processInfo.physicalMemory / 8)))
+    }()
     private var marks: [String: Double] = [:]
     private let cancelLock = NSLock()
     private var cancelledIDs: Set<String> = []
@@ -93,6 +103,7 @@ public final class Engine {
         }
         do {
             Memory.peakMemory = 0
+            Memory.clearCache()
             if isCancelled(id) { throw GenerationError.cancelled }
             // A 3D object's settings are refused before anything loads.
             if spec.family == "idol" { try IdolError.validate(Self.meshRequest(params)) }

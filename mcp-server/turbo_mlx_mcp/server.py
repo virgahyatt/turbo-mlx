@@ -4,6 +4,7 @@ Apple silicon, served over Streamable HTTP so other machines on the local networ
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import binascii
 import contextlib
@@ -14,6 +15,7 @@ import os
 import random
 import re
 import socket
+import subprocess
 import time
 import urllib.request
 from pathlib import Path
@@ -60,7 +62,7 @@ mcp = MCPServer(
         "Local generative media on an Apple-silicon Mac (MLX). Call list_models first: a model must be downloaded "
         "(ask the user, then download_model with confirm=true) before it can generate. Jobs run one at a time on the GPU. Long jobs "
         "(video, songs, big models) may outlast the call: the tool then returns a job_id; poll get_job(job_id). "
-        "A finished generation returns just its link (get_job with details=true gives the seed, size and the picture). To change an existing picture use "
+        "A finished generation returns just its link (get_job with details=true adds the seed, size and timings). To change an existing picture use "
         "edit_image. Input pictures may be URLs of earlier results, http(s) URLs, data: URIs or base64; a picture "
         "pasted into the chat must first be uploaded from its file: POST the bytes to /upload on this server with the "
         "same Authorization header (curl --data-binary @file.png -H 'Authorization: Bearer ...' <server>/upload), "
@@ -215,11 +217,29 @@ def _submit(m: catalog.Model, kind: str, params: dict[str, Any]) -> Job:
     return engine.submit(model_id=m.id, kind=kind, model=_model_spec(m), params=params, job_id=job_id)
 
 
-def _job_result(job: Job, details: bool = False) -> CallToolResult:
-    """A finished job answers with its link alone; `details` adds the seed, size and timings and inlines the
-    PNG (or a video's first frame). Running, failed and cancelled jobs answer with their short status."""
+PREVIEW_SIDE = 1024  # longest side of an inline preview: a JPEG of 100-250 KB, well under clients' 1 MB limit
+
+
+def _preview_jpeg(src: Path) -> bytes | None:
+    """A small JPEG of a result (made once with sips, kept in outputs/previews) for include_image."""
+    out = cfg.output_dir / "previews" / f"{src.stem}.jpg"
+    if not out.is_file():
+        out.parent.mkdir(exist_ok=True)
+        done = subprocess.run(["/usr/bin/sips", "-Z", str(PREVIEW_SIDE), "-s", "format", "jpeg", "-s", "formatOptions", "82",
+                               str(src), "--out", str(out)], capture_output=True)
+        if done.returncode != 0 or not out.is_file():
+            return None
+    return out.read_bytes()
+
+
+def _job_result(job: Job, details: bool = False, include_image: bool = False) -> CallToolResult:
+    """A finished job answers with its link alone; `details` adds the seed, size, timings and peak memory, as
+    text (no inline picture: a full-size PNG exceeds the 1 MB message limit of standard MCP clients). Running,
+    failed and cancelled jobs answer with their short status."""
     if job.status == "done" and job.result and not details:
-        return CallToolResult(content=[TextContent(type="text", text=_file_url(job.result["path"]))])
+        content: list[Any] = [TextContent(type="text", text=_file_url(job.result["path"]))]
+        content += _preview_content(job) if include_image else []
+        return CallToolResult(content=content)
     info = job.summary()
     content: list[Any] = []
     if job.status == "done" and job.result:
@@ -232,19 +252,28 @@ def _job_result(job: Job, details: bool = False) -> CallToolResult:
                 info[key] = r[key]
         if r.get("poster"):
             info["poster_url"] = _file_url(r["poster"])
-        image = r["path"] if r["path"].endswith(".png") else r.get("poster")
-        if image and Path(image).is_file():
-            content.append(ImageContent(type="image", mime_type="image/png",
-                                        data=base64.b64encode(Path(image).read_bytes()).decode()))
     elif job.status not in TERMINAL:
         info["queue_position"] = engine.queue_position(job)
         info["next"] = (f"Still running. Call get_job(job_id={job.id!r}); it waits up to 10 minutes by itself, "
                         "so do not sleep or poll quickly.")
     content.insert(0, TextContent(type="text", text=json.dumps(info, indent=1)))
+    if include_image and job.status == "done":
+        content += _preview_content(job)
     return CallToolResult(content=content, is_error=job.status == "failed")
 
 
-async def _run(job: Job, ctx: Context | None, wait_seconds: float | None, details: bool = False) -> CallToolResult:
+def _preview_content(job: Job) -> list[Any]:
+    """The inline preview of a finished image job (a video's first frame); nothing for sound or 3D."""
+    r = job.result or {}
+    image = r.get("path") if str(r.get("path", "")).endswith(".png") else r.get("poster")
+    data = _preview_jpeg(Path(image)) if image and Path(image).is_file() else None
+    if data is None:
+        return []
+    return [ImageContent(type="image", mime_type="image/jpeg", data=base64.b64encode(data).decode())]
+
+
+async def _run(job: Job, ctx: Context | None, wait_seconds: float | None, details: bool = False,
+               include_image: bool = False) -> CallToolResult:
     last = [0.0]
 
     async def report(j: Job) -> None:
@@ -259,7 +288,7 @@ async def _run(job: Job, ctx: Context | None, wait_seconds: float | None, detail
                 await ctx.report_progress(0, None, msg)
 
     await engine.wait(job, cfg.default_wait if wait_seconds is None else wait_seconds, report)
-    return _job_result(job, details)
+    return await asyncio.to_thread(_job_result, job, details, include_image)
 
 
 def _error(message: str) -> CallToolResult:
@@ -268,6 +297,8 @@ def _error(message: str) -> CallToolResult:
 
 WaitArg = Annotated[float | None, Field(description="Seconds to wait for the result before returning a job_id to poll "
                                                     "(default 600; 0 returns at once).", ge=0, le=3600)]
+IncludeImageArg = Annotated[bool, Field(description="Also return a small preview of the result inline (a JPEG, at most "
+                                                   f"{PREVIEW_SIDE} px; a video's first frame). Default: the link only.")]
 SeedArg = Annotated[int | None, Field(description="Random seed; omit for a random one.", ge=0)]
 ImageRef = Annotated[str, Field(description="Usually the URL (or file name) of an earlier result or upload from this server, used in place: never download and re-upload it. Also any http(s) URL, a data: URI or base64.")]
 
@@ -416,6 +447,7 @@ async def generate_image(
     loras: Annotated[list[dict] | None, Field(description='[{"path": "/abs/path/on/server.safetensors", "scale": 1.0}]')] = None,
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
+    include_image: IncludeImageArg = False,
 ) -> CallToolResult:
     """Generates an image from a prompt (or edits reference images); returns the PNG's link."""
     try:
@@ -443,7 +475,7 @@ async def generate_image(
             params["loras"] = [{"path": str(Path(lo["path"]).expanduser()), "scale": float(lo.get("scale", 1))} for lo in loras]
     except (ValueError, KeyError, OSError) as e:
         return _error(str(e))
-    return await _run(_submit(m, "image", params), ctx, wait_seconds)
+    return await _run(_submit(m, "image", params), ctx, wait_seconds, include_image=include_image)
 
 
 @mcp.tool()
@@ -459,6 +491,7 @@ async def edit_image(
     steps: Annotated[int | None, Field(description="Default: the model's own.")] = None,
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
+    include_image: IncludeImageArg = False,
 ) -> CallToolResult:
     """Edits a picture as the instruction says (change colours, hair, clothes, background, add or remove things)
     and returns the new PNG's link. A local file or a picture pasted into the chat cannot be sent directly: upload the file
@@ -466,6 +499,7 @@ async def edit_image(
     return await generate_image(
         prompt=instruction, ctx=ctx, model=model, width=width or 1024, height=height or 1024, steps=steps,
         reference_images=[image] + (extra_images or []), seed=seed, wait_seconds=wait_seconds,
+        include_image=include_image,
     )
 
 
@@ -487,6 +521,7 @@ async def generate_video(
     negative_prompt: Annotated[str | None, Field(description="With quality only.")] = None,
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
+    include_image: IncludeImageArg = False,
 ) -> CallToolResult:
     """Generates a video clip with sound (MP4, H.264) with LTX-2; returns its link."""
     try:
@@ -510,7 +545,7 @@ async def generate_video(
             params["last_image"] = _input_image(last_frame)
     except (ValueError, KeyError, OSError) as e:
         return _error(str(e))
-    return await _run(_submit(m, "video", params), ctx, wait_seconds)
+    return await _run(_submit(m, "video", params), ctx, wait_seconds, include_image=include_image)
 
 
 @mcp.tool()
@@ -570,6 +605,7 @@ async def upscale_image(
     softness: Annotated[float, Field(ge=0, le=1, description="Softening before enlarging, for noisy pictures.")] = 0.0,
     seed: SeedArg = None,
     wait_seconds: WaitArg = None,
+    include_image: IncludeImageArg = False,
 ) -> CallToolResult:
     """Enlarges a picture with SeedVR2 3B (one-step diffusion upscaler); returns the PNG's link."""
     try:
@@ -578,7 +614,7 @@ async def upscale_image(
         params = {"images": [_input_image(image)], "upscale": factor, "softness": softness, "steps": 1, "seed": seed}
     except (ValueError, KeyError, OSError) as e:
         return _error(str(e))
-    return await _run(_submit(m, "upscale", params), ctx, wait_seconds)
+    return await _run(_submit(m, "upscale", params), ctx, wait_seconds, include_image=include_image)
 
 
 @mcp.tool()
@@ -611,14 +647,15 @@ async def get_job(
     job_id: str,
     ctx: Context,
     wait_seconds: WaitArg = None,
-    details: Annotated[bool, Field(description="When done, also return the seed, size and timings, with the picture "
-                                               "(or a video's first frame) inline. Default: the link only.")] = False,
+    include_image: IncludeImageArg = False,
+    details: Annotated[bool, Field(description="When done, also return the seed, size, timings and peak memory "
+                                               "(text only). Default: the link only.")] = False,
 ) -> CallToolResult:
     """Status of a generation job; waits for it to finish (up to wait_seconds) and returns its result."""
     job = engine.jobs.get(job_id)
     if job is None:
         return _error(f"no job {job_id}")
-    return await _run(job, ctx, wait_seconds, details)
+    return await _run(job, ctx, wait_seconds, details, include_image)
 
 
 @mcp.tool()

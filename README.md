@@ -55,6 +55,7 @@ Environment variables, or `KEY=value` lines in `~/.config/turbo-mlx-mcp/env`:
 | `TURBO_PUBLIC_URL` | `http://<LAN IP>:<port>` | Base of the result links, if clients reach the Mac by another name. |
 | `TURBO_WAIT_SECONDS` | `600` | How long a tool call waits before returning a `job_id` to poll. |
 | `TURBO_LOW_MEMORY` | `auto` | The app's "Save memory": on below 64 GB of RAM. `1` / `0` to force. |
+| `TURBO_CACHE_LIMIT_GB` | RAM / 8 | MLX's buffer cache between allocations (16 GB on a 128 GB Mac). Uncapped, it grew to fill MLX's whole limit and stalled the GPU. |
 | `TURBO_ALLOW_LOCAL_PATHS` | off | `1` lets clients pass input pictures as file paths on the server. |
 | `HF_TOKEN` | none | Needed for gated models (FLUX 3 Image Klein, LTX-2.5): accept their licence on Hugging Face first. |
 
@@ -101,10 +102,13 @@ cd mcp-server && uv run python tests/smoke_client.py http://192.168.1.20:8765/mc
 | `generate_sound_effect` | MOSS-SoundEffect: up to 30 s of sound from a description. WAV URL. |
 | `upscale_image` | SeedVR2 3B: enlarge a picture 2-4x. |
 | `image_to_3d` | Idol: one picture of an object to a Gaussian-splat GLB. |
-| `get_job`, `list_jobs`, `cancel_job` | Follow, list and cancel jobs. `get_job(details=true)` adds seed, size, timings and the picture inline. |
+| `get_job`, `list_jobs`, `cancel_job` | Follow, list and cancel jobs. `get_job(details=true)` adds seed, size, timings and peak memory. |
 | `unload_model` | Free the GPU memory of the loaded model. |
 
-A finished generation answers with its link alone, which keeps small models' context clean.
+A finished generation answers with its link alone, which keeps small models' context clean. Pass
+`include_image: true` (on `generate_image`, `edit_image`, `generate_video`, `upscale_image` or `get_job`)
+to also get a preview inline: a JPEG of at most 1024 px (a video's first frame), well under the 1 MB
+message limit of standard MCP clients. The link is always the full-quality file.
 
 Input pictures can be http(s) URLs, `data:` URIs, base64, or the URL of an earlier result from this server
 (so a client can generate, then edit or upscale the result). To use a local file, upload it first; the
