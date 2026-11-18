@@ -81,7 +81,12 @@ public final class Engine {
         // under memory pressure macOS would otherwise page the weights out, and a 10 s step could
         // take 60. The allowance goes back when the job ends, so an idle engine pins nothing.
         let wired = WiredAllowance.begin()
+        // As the app's KeepAwake did: an unattended Mac must neither idle-sleep nor App Nap the engine mid-job (a
+        // napped engine leaves the GPU mostly idle, and steps slow several times over).
+        let awake = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled, .latencyCritical], reason: "Generating with turbo-engine")
         defer {
+            ProcessInfo.processInfo.endActivity(awake)
             wired?.end()
             forget(id)
             Memory.clearCache()

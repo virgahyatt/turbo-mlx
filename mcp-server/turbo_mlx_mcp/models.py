@@ -225,6 +225,11 @@ class Downloader:
                     sys.executable, "-m", "turbo_mlx_mcp.download_worker", repo, revision, json.dumps(pats),
                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
                 )
+                # Keep an unattended Mac from idle-sleeping until the worker exits (as the app's KeepAwake did).
+                with contextlib.suppress(OSError):
+                    await asyncio.create_subprocess_exec("/usr/bin/caffeinate", "-i", "-w", str(d.proc.pid),
+                                                         stdout=asyncio.subprocess.DEVNULL,
+                                                         stderr=asyncio.subprocess.DEVNULL)
                 _, err = await d.proc.communicate()
                 if d.status != "running":
                     return
